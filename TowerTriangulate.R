@@ -4,6 +4,8 @@
 
 # first need to remove any duplicate values from the radio tower data
 library(tidyverse)
+library(terra)
+
 tag1 <- read.csv("Spring2023TagsProcessed.csv") #787 observations
 tag2 <- tag1 %>%  distinct(Antenna, GPSdate, Northing, Easting, TagID, AnimalID, GPStime, 
                            .keep_all=TRUE) #5991 observations
@@ -33,10 +35,14 @@ tag1[,"uniqueID"] <- paste0(tag1proj$AnimalID, "-",tag1proj$GPSdate,"-",
 ## need utm for triangulation code
 regcrs <-"+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs"
 
-land2021 <- rast("2021landcoverRaster.tif") #just using this file for the CRS
-tag1sp <- vect(tag1, geom=c("longitude", "latitude"), crs=regcrs, geomkeep=FALSE)
+tag1sp <- vect(tag1, geom=c("longitude", "latitude"), crs=regcrs)
 tag1proj <- project(tag1sp, land2021)
-
+tag1.df <- as.data.frame(tag1proj, geom="XY")
+tag1.df2 <- tag1.df %>%
+  dplyr::rename(
+    longitude = x,
+    latitude = y
+  )
 
 as.receiver<-function(x) {
   class(x)<-"receiver"
@@ -60,7 +66,7 @@ findintersects<-function(x) {
   for (group in unique(x$uniqueID)) {
     
     ## Create subdata to store data of the single UniqueID
-    subdata=data.frame(X=x$Easting[x$uniqueID==group],Y=x$Northing[x$uniqueID==group],
+    subdata=data.frame(X=x$longitude[x$uniqueID==group],Y=x$latitude[x$uniqueID==group],
                        TAN=x$tan[x$uniqueID==group])
     
     ## Calculate number of Angles in the single UniqueID
@@ -92,7 +98,7 @@ findintersects<-function(x) {
 }
 
 locateDF <- data.frame()
-x <- tag1proj
+x <- tag1.df2
 
 locate<-function(x) {
 
@@ -100,7 +106,7 @@ locate<-function(x) {
 solver<-function(par) {
   
   ## Isolate portion of data corresponding to the unique grouping
-  subdata=data.frame(X=x$Easting[x$uniqueID==group],Y=x$Northing[x$uniqueID==group],
+  subdata=data.frame(X=x$longitude[x$uniqueID==group],Y=x$latitude[x$uniqueID==group],
                      SIN=x$sin[x$uniqueID==group],COS=x$cos[x$uniqueID==group])
   
   ## Create variables to hold transmitter location estimates
@@ -178,7 +184,7 @@ for (group in unique(intersections$uniqueID)) {
     }
     
     ## Create error data frame
-    errors=data.frame(X=x$Easting[x$uniqueID==group],Y=x$Northing[x$uniqueID==group],
+    errors=data.frame(X=x$longitude[x$uniqueID==group],Y=x$latitude[x$uniqueID==group],
                       theta=(pi/180*(90-x$Angle[x$uniqueID==group])),si=x$sin[x$uniqueID==group],
                       ci=x$cos[x$uniqueID==group])
     errors$X_hat<-transmitter[group,1]
@@ -242,8 +248,13 @@ test <- locate(x)
 
 test[,"uniqueID"] <- row.names(test)
 
-newdata<-left_join(tag1proj, test, by="uniqueID")
-write.csv(newdata, "Triangulate.csv")
+newdata<-left_join(tag1.df2, test, by="uniqueID")
+
+newdata2 <- newdata %>% 
+  dplyr::mutate(X = dplyr::coalesce(X,longitude)) %>% 
+  dplyr::mutate(Y = dplyr::coalesce(Y,latitude)) 
+
+write.csv(newdata2, "Triangulate.csv")
 
 ## add handheld data to the triangulate data
 
