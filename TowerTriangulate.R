@@ -1,54 +1,71 @@
-####    code for triangulating the radio tower and motus data
-
-##  NOTE *** I have been triangulating periodically to help with field work only using tower data
+####    code for triangulating the radio tower and motus 
 
 # first need to remove any duplicate values from the radio tower data
 library(tidyverse)
-library(terra)
 
-tag1 <- read.csv("Spring2023TagsProcessed.csv") #787 observations
-tag2 <- tag1 %>%  distinct(Antenna, GPSdate, Northing, Easting, TagID, AnimalID, GPStime, 
-                           .keep_all=TRUE) #5991 observations
+tag1 <- read.csv("Spring2023TagsProcessed.csv") #3354 observations
+tag2 <- tag1 %>%  distinct() #no duplicates
 
-# next, need to join motus and radio tower data - motus will have lots of false detections
-library(lubridate)
-motus <- read.csv("motus2022.csv") #8761 obs
-motus$month <-month(motus$GPSdate) 
-motus2<- subset(motus, month < 7) #7013 obs
+library(dplyr)
 
-motag <- plyr::rbind.fill (tag2, motus2)
-
-#code to triangulate bumble bee location. Taken from package sigloc
-#cannot use package directly as it has been removed from CRAN
-
-separateTime <- function(time){
-  timeDF <- stringr::str_split(time,":", simplify=T)
-  timeDF <- apply(timeDF, 2, as.numeric)
-  timeDF <- data.frame(timeDF)
-  names(timeDF) <- c("hours","minutes","seconds")
-  return(timeDF)
+binTime <- function(timeColumn, interval = 20) {
+  # Convert string to POSIXct (today's date + time)
+  time <- as.POSIXct(timeColumn, format = "%H:%M:%S", tz = "UTC")
+  
+  # Get seconds since midnight
+  secs <- as.numeric(difftime(time, floor_date(time, "day"), units = "secs"))
+  
+  # Round seconds to nearest interval
+  intervalSecs <- interval * 60
+  roundedSecs <- round(secs / intervalSecs) * intervalSecs
+  
+  # Add rounded seconds back to midnight
+  rounded_time <- as.POSIXct(floor_date(time, "day") + roundedSecs, 
+                             origin = "1970-01-01", tz = "UTC")
+  
+  # Return time in HH:MM format
+  format(rounded_time, "%H:%M:%S")
 }
-tagsTime <- separateTime(tag1$GPStime)
-tag1[,"uniqueID"] <- paste0(tag1proj$AnimalID, "-",tag1proj$GPSdate,"-",
-                            tagsTime$hours)
 
-## need utm for triangulation code
-regcrs <-"+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs"
+tag1$SiteName <- ifelse(grepl("W",substr(tag1$TowerID, 6,6)), "Wallace","Rare")
+tag1$GroupTime <- binTime(tag1$GPStime, 10) %>% filter(!is.na(Easting))
+tag1$uniqueID <- paste0(tag1$AnimalID,tag1$GPSdate,tag1$GroupTime)  
+rare.tri <- tag1 %>% filter(SiteName == "Rare") #447
+wallace.tri <-tag1 %>% filter(SiteName == "Wallace") #2907
 
-tag1sp <- vect(tag1, geom=c("longitude", "latitude"), crs=regcrs)
-tag1proj <- project(tag1sp, land2021)
-tag1.df <- as.data.frame(tag1proj, geom="XY")
-tag1.df2 <- tag1.df %>%
-  dplyr::rename(
-    longitude = x,
-    latitude = y
-  )
+###   triangulation code needs spatial data
+library(sf)
 
-as.receiver<-function(x) {
-  class(x)<-"receiver"
+
+tower1Rare <- data.frame(x = 1286438, y = 541122.7)
+tower1Rare <- st_as_sf(tower1Rare, coords=c("x","y"), crs = "ESRI:102002")
+tower1Rare <- tower1Rare %>% st_transform("epsg:4326")
+rare.tri[rare.tri$TowerID=="Tower1",c("Easting")] <- st_coordinates(tower1Rare)[1]
+rare.tri[rare.tri$TowerID=="Tower1",c("Northing")] <- st_coordinates(tower1Rare)[2]
+rare.tri[grep("Tower1", rare.tri$TowerID),"TowerID"] <- "TowerR01"
+
+# Convert to sf object
+rare.triSF <- st_as_sf(rare.tri, coords = c("Easting", "Northing"), crs = 4326)
+
+# triangulation code needs UTM
+rareUTM <- st_transform(rare.triSF, crs = "ESRI:102002")
+
+#Extract X and Y from geometry
+coords <- st_coordinates(rareUTM)
+
+# Combine with other columns
+rareUTM <- cbind(st_drop_geometry(rareUTM), longitude = coords[,1], 
+                  latitude = coords[,2])
+x<-rareUTM
+
+####    Triangulation Function    ####
+
+as.receiver <-function(x) {
+  class(x) <-"receiver"
   return(x)
 }
-findintersects<-function(x) {
+
+findintersects <- function(x) {
   
   ## Convert compass Angle to standard radian measure (Lenth 1981)
   x$theta = (pi/180*(90-x$Angle)) 
@@ -59,7 +76,7 @@ findintersects<-function(x) {
   x$tan = tan(x$theta)
   
   ## Create data frame to store coordinates of all intersections
-  results<-data.frame(uniqueID=NA,X=NA,Y=NA) 
+  results <-data.frame(uniqueID=NA,X=NA,Y=NA) 
   
   ## Keep track of total number of intersections in the data
   counter=1; 
@@ -97,13 +114,13 @@ findintersects<-function(x) {
   return(results)
 }
 
-locateDF <- data.frame()
-x <- tag1.df2
 
-locate<-function(x) {
+locateDF <- data.frame()
+
+locate <-function(x) {
 
 ## Define function to solve system of MLE equations
-solver<-function(par) {
+solver <-function(par) {
   
   ## Isolate portion of data corresponding to the unique grouping
   subdata=data.frame(X=x$longitude[x$uniqueID==group],Y=x$latitude[x$uniqueID==group],
@@ -111,8 +128,8 @@ solver<-function(par) {
   
   ## Create variables to hold transmitter location estimates
   loc_est = numeric(length(par))
-  transmitter_x<-par[1]
-  transmitter_y<-par[2]
+  transmitter_x <- par[1]
+  transmitter_y <- par[2]
   
   ## Define system of MLE equations (Lenth 1981)
   loc_est[1] = -sum((transmitter_y-subdata$Y)*(subdata$SIN*(transmitter_x-subdata$X)-
@@ -135,7 +152,7 @@ x$cos = cos(x$theta)
 x$tan = tan(x$theta)
 
 ## Calculates intersection of all Angles in each grouping
-intersections<-findintersects(x) 
+intersections <-findintersects(x) 
 
 ## Create data frame to store calculated transmitter locations
 transmitter<-data.frame(X=NA,Y=NA,BadPoint=NA,Var_X=NA,Var_Y=NA,Cov_XY=NA,AngleDiff=NA,
@@ -162,10 +179,10 @@ for (group in unique(intersections$uniqueID)) {
     
     ## Ensure location validity prior to recording
     valid=TRUE
-    if (location[1]<min(intersections$X[intersections$uniqueID==group]-buffer)) valid=FALSE
-    if (location[1]>max(intersections$X[intersections$uniqueID==group]+buffer)) valid=FALSE
-    if (location[2]<min(intersections$Y[intersections$uniqueID==group]-buffer)) valid=FALSE
-    if (location[2]>max(intersections$Y[intersections$uniqueID==group]+buffer)) valid=FALSE
+    # if (location[1]<min(intersections$X[intersections$uniqueID==group]-buffer)) valid=FALSE
+    # if (location[1]>max(intersections$X[intersections$uniqueID==group]+buffer)) valid=FALSE
+    # if (location[2]<min(intersections$Y[intersections$uniqueID==group]-buffer)) valid=FALSE
+    # if (location[2]>max(intersections$Y[intersections$uniqueID==group]+buffer)) valid=FALSE
     
     ## Set default color scheme for transmitter ploting
     row.names(transmitter) <- group
@@ -243,8 +260,20 @@ for (group in unique(intersections$uniqueID)) {
 return(locateDF)
 }
 
-test <- locate(x)
+x2 <- as.receiver(x)
+test <- locate(rareUTM)
+test$uniqueID <- row.names(test)
+test$uniqueID <- gsub("001","01", test$uniqueID)
 
+for(i in 1:nrow(test)) {
+  rareUTM[test$uniqueID[i] == rareUTM$uniqueID,"longitude"] <- test[i,"X"]
+  rareUTM[test$uniqueID[i] == rareUTM$uniqueID,"latitude"] <- test[i,"Y"]
+}
+
+rareUTM ## the done one
+write.csv(rareUTM, "2023SpringRareTriangulated.csv")
+
+test <- locate(x)
 
 test[,"uniqueID"] <- row.names(test)
 
