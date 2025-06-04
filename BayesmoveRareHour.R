@@ -1,4 +1,4 @@
-#bayesmove for spring 2023 project
+#bayesmove at 1 hr time period for spring 2023 project
 
 data <- read.csv("2023SpringBothSites.csv")
 
@@ -36,7 +36,6 @@ tagsNoNA$date <- as.POSIXct(tagsNoNA$date, format = "%Y-%m-%d %H:%M:%S", tz = "U
 # need to separate out the two sites
 
 raredata <- subset(tagsNoNA, SiteName == "Rare")
-wallacedata <- subset(tagsNoNA, SiteName == "Wallace")
 
 # Rare
 
@@ -51,98 +50,70 @@ single_occurrence_ids <- id_counts %>%
   filter(n == 1) # there is only 1 RFO51907
 
 # remove these IDs before running prep_data
- raredata_filtered <- raredata %>%
- filter(id %in% single_occurrence_ids$id == FALSE)
- 
+raredata_filtered <- raredata %>%
+  filter(id %in% single_occurrence_ids$id == FALSE)
+
 # Then run  prep_data on the filtered data:
 tracks.rare <- prep_data(dat = raredata_filtered, coord.names = c("x", "y"), id = "id")
 tracks.rare <- replace (tracks.rare, is.na(tracks.rare), 0)
 #can't run prep_data on any ids with just one occurrence.
 
-head(tracks.rare)
-unique (tracks.rare$id) #21 unique tracks
+#one hour survey perioud
 
-library(ggplot2)
-
-boxplot(log10(tracks.rare$dt))
-tracks.big <- tracks.rare %>% filter(dt < 10000 & dt > 1)
-tracks.big2 <- tracks.big %>% filter(dt < 2000 & dt > 1)
-#use 15 min, 1 hr, and one day as the time intervals
-
-#round time steps to the three intervals
-hist(tracks.rare$dt, breaks=100)
-
-tracks.ten <-round_track_time(dat=tracks.rare, id="id", int=302400, tol=302400, 
-                              time.zone="UTC", units="secs")
-
-tracks.ten <- tracks.ten %>%
-  mutate(rest = case_when(step > 0 ~ 2,
-                          step == 0 ~ 1)
-  )
-
+tracks.hour <-round_track_time(dat=tracks.rare, id="id", int=1800, tol=1800, 
+                             time.zone="UTC", units="secs")
 
 # Create list from data frame where each element is a different track
 
-tracks.list.ten <- df_to_list(dat = tracks.ten, ind = "id")
+tracks.list.hour <- df_to_list(dat = tracks.hour, ind = "id")
 
 # Filter observations to time interval
 
-tracks_filt.list.ten <- filter_time(dat.list = tracks.list.ten, int = 302400)
-
-#will go forward with 10 minute, min, day. 
+tracks_filt.list.hour <- filter_time(dat.list = tracks.list.hour, int = 1800)
 
 #### Discretize data streams (put into bins)
-angle.bin.lims=c(-3.143, -2.356, -1.571, -0.785,  0, 0.785,  1.571,  2.356,  3.143)
+angle.bin.lims=c(-3.143, -2.356, -1.571, -0.785,  0, 
+                 0.785,  1.571,  2.356,  3.143)
 angle.bin.lims
 
-tracks.ten_norest <- subset(tracks.ten, rest == 2)
-dist.bin.lims=quantile(tracks.ten_norest[tracks.ten_norest$dt==300,]$step,
-                       c(0, 0.1, 0.25, 0.30, 0.50, 0.75, 0.90, 1), na.rm=T) #7 bins
-
+dist.bin.lims = quantile(tracks.hour[tracks.hour$dt==1800,]$step,
+                         c(0, 0.1, 0.25, 0.30, 0.50, 0.75, 0.90, 1), na.rm=T) #7 bins
 dist.bin.lims
 
 library(tidyverse)
 library(purrr)
 # Assign bins to observations
-tracks_disc.list.ten <- map(tracks_filt.list.ten,
-                            discrete_move_var,
-                            lims = list(dist.bin.lims, angle.bin.lims),
-                            varIn = c("step", "angle"),
-                            varOut = c("SL", "TA"))
-
-# Since 0s get lumped into bin 1 for SL, need to add an extra bin to store 0s
-tracks_disc.list.ten2 <- tracks_disc.list.ten %>%
-  map(., ~mutate(.x, SL = SL + 1)) %>%  #to shift bins over
-  map(., ~mutate(.x, SL = case_when(step == 0 ~ 1,  #assign 0s to bin 1
-                                    step != 0 ~ SL)  #otherwise keep the modified SL bin
-  ))
+tracks_disc.list.hour <- map(tracks_filt.list.hour,
+                           discrete_move_var,
+                           lims = list(dist.bin.lims, angle.bin.lims),
+                           varIn = c("step", "angle"),
+                           varOut = c("SL", "TA"))
 
 # Only retain id, discretized step length (SL), turning angle (TA), and rest columns
-tracks.ten.list2 <- map(tracks_disc.list.ten2,
-                        subset,
-                        select = c(id, SL, TA))
-
-
-
+tracks.hour.list2 <- map(tracks_disc.list.hour,
+                       subset,
+                       select = c(id, SL, TA))
 ### run the segmentation model
 
 set.seed(1)
 
 # Define hyperparameter for prior distribution
-alpha<- 1
+alpha <- 1
 
 # Set number of iterations for the Gibbs sampler
-ngibbs<- 10000
+ngibbs <- 10000
 
 # Set the number of bins used to discretize each data stream
-nbins<- c(8,8)  #SL, TA, rest (in the order from left to right in tracks.list2)
+nbins<- c(7,8)  #SL, TA, rest (in the order from left to right in tracks.list2)
 
 progressr::handlers(progressr::handler_progress(clear = FALSE))
 future::plan(future::multisession, workers = 3)  #run all MCMC chains in parallel
 #refer to future::plan() for more details
 
-dat.ten.res <- segment_behavior(data = tracks.ten.list2, ngibbs = ngibbs, nbins = nbins,
-                                alpha = alpha)
+dat.hour.res <- segment_behavior(data = tracks.hour.list2, 
+                               ngibbs = ngibbs, 
+                               nbins = nbins,
+                               alpha = alpha)
 
 future::plan(future::sequential)  #return to single core
 
@@ -158,27 +129,26 @@ get_MAP <- function(dat, nburn) {
   return(MAP.est)
 }
 
-MAP.est.ten <- get_MAP(dat = dat.ten.res$LML[,-1], nburn = 5000)
-MAP.est.ten
-idColumn <- dat.ten.res$LML[,1]
+MAP.est.hour <- get_MAP(dat = dat.hour.res$LML[,-1], nburn = 5000)
+MAP.est.hour
+idColumn <- dat.hour.res$LML[,1]
 
-brkpts.ten <- get_breakpts(dat = dat.ten.res$brkpts, MAP.est = MAP.est.ten)
+brkpts.hour <- get_breakpts(dat = dat.hour.res$brkpts, MAP.est = MAP.est.hour)
 
 # How many breakpoints estimated per ID?
-apply(brkpts.ten[,-1], 1, function(x) length(purrr::discard(x, is.na)))
+apply(brkpts.hour[,-1], 1, function(x) length(purrr::discard(x, is.na)))
 
-tracks.seg.ten <- assign_tseg(dat = tracks_disc.list.ten2, 
-                              brkpts = brkpts.ten)
-head(tracks.seg.ten)
+tracks.seg.hour <- assign_tseg(dat = tracks_disc.list.hour, 
+                             brkpts = brkpts.hour)
+head(tracks.seg.hour)
 
 # Select only id, tseg, SL, TA,
-tracks.seg.ten2 <- tracks.seg.ten[,c("id","tseg","SL","TA")]
-
+tracks.seg.hour.2 <- tracks.seg.hour[,c("id","tseg","SL","TA")]
 
 # Summarize observations by track segment
-nbins <- c(8,8)
+nbins <- c(7,8)
 
-obs <- summarize_tsegs(dat = tracks.seg.ten2, nbins = nbins)
+obs <- summarize_tsegs(dat = tracks.seg.hour.2, nbins = nbins)
 
 head(obs)
 
@@ -197,33 +167,33 @@ gamma1 <- 0.1
 alpha <- 0.1
 
 # Run LDA model
-res.ten <- cluster_segments(dat=obs, gamma1=gamma1, alpha=alpha,
-                            ngibbs=ngibbs, nmaxclust=nmaxclust,
-                            nburn=nburn, ndata.types=ndata.types)
+res.hour <- cluster_segments(dat=obs, gamma1=gamma1, alpha=alpha,
+                           ngibbs=ngibbs, nmaxclust=nmaxclust,
+                           nburn=nburn, ndata.types=ndata.types)
 
 ### Determine the number of likely behaviour states
 
 # Extract proportions of behaviors per track segment
-theta.estim.ten <- extract_prop(res = res.ten, ngibbs = ngibbs, nburn = nburn,
-                                nmaxclust = nmaxclust)
+theta.estim.hour <- extract_prop(res = res.hour, ngibbs = ngibbs, nburn = nburn,
+                               nmaxclust = nmaxclust)
 
 # Calculate mean proportions per behaviour
-(theta.means.ten <- round(colMeans(theta.estim.ten), digits = 3))
+(theta.means.hour <- round(colMeans(theta.estim.hour), digits = 3))
 
 # Calculate cumulative sum
-cumsum(theta.means.ten) #first 2 states comprise 97.4% of all observations
+cumsum(theta.means.hour) #first 2 states comprise 99.5% of all observations
 
 # Convert to data frame for ggplot2
-theta.estim_df.ten<- theta.estim.ten %>%
+theta.estim_df.hour <- theta.estim.hour %>%
   as.data.frame() %>%
   pivot_longer(., cols = 1:nmaxclust, names_to = "behaviour", 
                values_to = "prop") %>%
   modify_at("behaviour", factor)
 
-levels(theta.estim_df.ten$behaviour)<- 1:nmaxclust
+levels(theta.estim_df.hour$behaviour) <- 1:nmaxclust
 
 # Plot results
-ggplot(theta.estim_df.ten, aes(behaviour, prop)) +
+ggplot(theta.estim_df.hour, aes(behaviour, prop)) +
   geom_boxplot(fill = "grey35", alpha = 0.5, outlier.shape = NA) +
   geom_jitter(color = "grey35", position = position_jitter(0.1),
               alpha = 0.3) +
@@ -232,17 +202,17 @@ ggplot(theta.estim_df.ten, aes(behaviour, prop)) +
   theme(panel.grid = element_blank(),
         axis.title = element_text(size = 16),
         axis.text = element_text(size = 14))
-#most are in the first two behaviour states
+#most are in the first two behaviour states, but mostly just one
 
 #### Classify the states as behaviours
 
 # Extract bin estimates from phi matrix
-behav.res.ten <- get_behav_hist(dat = res.ten, nburn = nburn, 
-                                ngibbs = ngibbs, nmaxclust = nmaxclust,
-                                var.names = c("Step Length","Turning Angle"))
+behav.res.hour <- get_behav_hist(dat = res.hour, nburn = nburn, 
+                               ngibbs = ngibbs, nmaxclust = nmaxclust,
+                               var.names = c("Step Length","Turning Angle"))
 
 # Plot histograms of proportion data
-ggplot(behav.res.ten, aes(x = bin, y = prop, fill = as.factor(behav))) +
+ggplot(behav.res.hour, aes(x = bin, y = prop, fill = as.factor(behav))) +
   geom_bar(stat = 'identity') +
   labs(x = "\nBin", y = "Proportion\n") +
   theme_bw() +
@@ -259,23 +229,26 @@ ggplot(behav.res.ten, aes(x = bin, y = prop, fill = as.factor(behav))) +
   scale_x_continuous(breaks = 1:7) +
   facet_grid(behav ~ var, scales = "free_x")
 
-# behaviour 1 = MPC, Minimal Positional Change majority zero step lengths, 
-#with mainly straight but some turns
-# behaviour 2 = exploratory, lots of differnt SL and lots of turns, larger SL
-# behaviour 3 = rest but is very rare, not sure if it can be tested statistically.
+# behaviour 1 = Transit only large step lengths, mainly slight TA but a 
+#minority are more tortuous or straight 
+# behaviour 2 = explore, only large step lengths, mainly tortuous TA,
+# some straight and few at less slight turn angles 
+#looks very very similar to the 15 min time period
 
-theta.estim.long.ten <- expand_behavior(dat = tracks.seg.ten, theta.estim = theta.estim.ten, 
-                                        obs = obs,
-                                        nbehav = 3, 
-                                        behav.names = c("MPC", "Explore", "ARS"),
-                                        behav.order = c(1,2,3))
+theta.estim.long.hour <- expand_behavior(dat = tracks.seg.hour, 
+                                       theta.estim = theta.estim.hour, 
+                                       obs = obs,
+                                       nbehav = 2, 
+                                       behav.names = c("Transit", 
+                                                       "Explore"),
+                                       behav.order = c(1,2))
 
 ##### Assign behavioural states to tracks
 
 # Merge results with original data
-tracks.out.ten <- assign_behavior(dat.orig = tracks.ten,
-                                  dat.seg.list = df_to_list(tracks.seg.ten, "id"),
-                                  theta.estim.long = theta.estim.long.ten,
-                                  behav.names = c("MPC", "Explore", "ARS"))
+tracks.out.hour <- assign_behavior(dat.orig = tracks.hour,
+                                 dat.seg.list = df_to_list(tracks.seg.hour, "id"),
+                                 theta.estim.long = theta.estim.long.hour,
+                                 behav.names = c("Transit", "Explore"))
 
-write.csv(tracks.out.ten, "tracksout_pesticideten.csv")
+write.csv(tracks.out.hour, "tracksout_rareHour.csv")
